@@ -40,3 +40,22 @@ impl NodeLike for AddF32 {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bevy_animation_graph_core::{
+        animation_graph::GraphInputPin, utils::testing::WrapperBuilder,
+    };
+
+    use crate::f32::add_f32::AddF32;
+
+    #[test]
+    fn add_test() {
+        WrapperBuilder::node(AddF32)
+            .with_const_input_data(GraphInputPin::passthrough(AddF32::INPUT_1), 3.)
+            .with_const_input_data(GraphInputPin::passthrough(AddF32::INPUT_2), 5.)
+            .build()
+            .when_queried()
+            .then_output_is(AddF32::OUTPUT, 8.);
+    }
+}
