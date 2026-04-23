@@ -27,11 +27,12 @@ use crate::{
     state_machine::high_level::StateMachine,
 };
 
-pub struct WrapperBuilder<T> {
+pub struct GraphTestHarness<T> {
     env: TestIoEnv,
     graph_setup: T,
 }
-impl WrapperBuilder<NodeSpecSystemExtractor> {
+
+impl GraphTestHarness<NodeSpecSystemExtractor> {
     pub fn node(node_inner: impl NodeLike) -> Self {
         Self::new(NodeSpecSystemExtractor(AnimationNode::new(
             "test", node_inner,
@@ -39,9 +40,9 @@ impl WrapperBuilder<NodeSpecSystemExtractor> {
     }
 }
 
-impl<T: SystemExtractor> WrapperBuilder<T> {
+impl<T: SystemExtractor> GraphTestHarness<T> {
     pub fn new(setup: T) -> Self {
-        Self {
+        GraphTestHarness {
             env: TestIoEnv::default(),
             graph_setup: setup,
         }
@@ -100,31 +101,45 @@ impl<T: SystemExtractor> WrapperBuilder<T> {
         self
     }
 
-    pub fn build(self) -> Wrapper {
+    pub fn when_queried(self) -> GraphTestResult {
         let mut world = World::new();
         let setup = self.setup(&mut world);
 
-        Wrapper {
-            world,
-            params: UnitTestSystemParams {
-                graph: setup.graph,
-                env: self.env,
-            },
-        }
+        let params = UnitTestSystemParams {
+            graph: setup.graph,
+            env: self.env,
+        };
+
+        let out = world
+            .run_system_cached_with(Self::query_system, &params)
+            .unwrap();
+
+        GraphTestResult { result: out }
     }
 
-    // pub graph_clip_assets: Res<'w, Assets<GraphClip>>,
-    // pub animation_graph_assets: Res<'w, Assets<AnimationGraph>>,
-    // pub state_machine_assets: Res<'w, Assets<StateMachine>>,
-    // pub skeleton_assets: Res<'w, Assets<Skeleton>>,
-    // // HACK: The mutable transform access is needed due to the query being reused by the apply_pose
-    // // function. This is due to bevy's restriction against conflicting system parameters
-    // pub transform_query: Query<'w, 's, (&'static mut Transform, &'static GlobalTransform)>,
-    // pub names_query: Query<'w, 's, &'static Name>,
-    // pub children_query: Query<'w, 's, &'static Children>,
-    // pub parent_query: Query<'w, 's, &'static ChildOf>,
-    // #[cfg(feature = "physics_avian")]
-    // pub rigidbody_query: Query<'w, 's, &'static avian3d::prelude::RigidBody>,
+    pub fn query_system(
+        InRef(input): InRef<UnitTestSystemParams>,
+        resources: SystemResources,
+    ) -> Result<HashMap<PinId, DataValue>, GraphError> {
+        let graph = resources.animation_graph_assets.get(&input.graph).unwrap();
+        let mut arena = GraphContextArena::new(input.graph.id());
+        let mut gizmos = DeferredGizmos::default();
+        let global_input_data = HashMap::new();
+        let entity_map = HashMap::new();
+
+        let ctx = GraphContext::new(
+            arena.get_toplevel_id(),
+            graph,
+            &mut arena,
+            &resources,
+            &input.env,
+            Entity::PLACEHOLDER,
+            &entity_map,
+            &mut gizmos,
+            &global_input_data,
+        );
+        graph.query_with_context(QueryOutputTime::None, ctx)
+    }
 
     fn setup(&self, world: &mut World) -> UnitTestSetup {
         let graph = AnimationGraph::new();
@@ -168,6 +183,29 @@ impl<T: SystemExtractor> WrapperBuilder<T> {
     ) {
         let graph = animation_graph_assets.get_mut(&graph_handle).unwrap();
         setup.graph_setup(graph, meta)
+    }
+}
+
+#[derive(Debug)]
+pub struct GraphTestResult {
+    result: Result<HashMap<PinId, DataValue>, GraphError>,
+}
+
+impl GraphTestResult {
+    pub fn then_output_is(
+        &self,
+        pin_id: impl Into<PinId>,
+        expected: impl Into<DataValue>,
+    ) -> &Self {
+        let pin: PinId = pin_id.into();
+        let val: DataValue = expected.into();
+        assert_eq!(&val, self.result.as_ref().unwrap().get(&pin).unwrap());
+        self
+    }
+
+    pub fn then_output_is_empty(&self) -> &Self {
+        assert!(self.result.as_ref().unwrap().is_empty());
+        self
     }
 }
 
@@ -242,69 +280,6 @@ impl SystemExtractor for NodeSpecSystemExtractor {
                 }
             }
         }
-    }
-}
-
-pub struct Wrapper {
-    world: World,
-    params: UnitTestSystemParams,
-}
-
-impl Wrapper {
-    pub fn when_queried(&mut self) -> WrapperResult {
-        let out = self
-            .world
-            .run_system_cached_with(Self::system, &self.params)
-            .unwrap();
-
-        WrapperResult { result: out }
-    }
-
-    pub fn system(
-        InRef(input): InRef<UnitTestSystemParams>,
-        resources: SystemResources,
-    ) -> Result<HashMap<PinId, DataValue>, GraphError> {
-        let graph = resources.animation_graph_assets.get(&input.graph).unwrap();
-        let mut arena = GraphContextArena::new(input.graph.id());
-        let mut gizmos = DeferredGizmos::default();
-        let global_input_data = HashMap::new();
-        let entity_map = HashMap::new();
-
-        let ctx = GraphContext::new(
-            arena.get_toplevel_id(),
-            graph,
-            &mut arena,
-            &resources,
-            &input.env,
-            Entity::PLACEHOLDER,
-            &entity_map,
-            &mut gizmos,
-            &global_input_data,
-        );
-        graph.query_with_context(QueryOutputTime::None, ctx)
-    }
-}
-
-#[derive(Debug)]
-pub struct WrapperResult {
-    result: Result<HashMap<PinId, DataValue>, GraphError>,
-}
-
-impl WrapperResult {
-    pub fn then_output_is(
-        &self,
-        pin_id: impl Into<PinId>,
-        expected: impl Into<DataValue>,
-    ) -> &Self {
-        let pin: PinId = pin_id.into();
-        let val: DataValue = expected.into();
-        assert_eq!(&val, self.result.as_ref().unwrap().get(&pin).unwrap());
-        self
-    }
-
-    pub fn then_output_is_empty(&self) -> &Self {
-        assert!(self.result.as_ref().unwrap().is_empty());
-        self
     }
 }
 

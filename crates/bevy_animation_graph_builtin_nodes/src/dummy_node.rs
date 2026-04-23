@@ -32,14 +32,13 @@ impl NodeLike for DummyNode {
 
 #[cfg(test)]
 mod tests {
-    use bevy_animation_graph_core::utils::testing::WrapperBuilder;
+    use bevy_animation_graph_core::utils::testing::GraphTestHarness;
 
     use crate::dummy_node::DummyNode;
 
     #[test]
     fn dummy_test() {
-        WrapperBuilder::node(DummyNode)
-            .build()
+        GraphTestHarness::node(DummyNode)
             .when_queried()
             .then_output_is_empty();
     }
