@@ -272,7 +272,7 @@ impl Wrapper {
 
         let ctx = GraphContext::new(
             arena.get_toplevel_id(),
-            &graph,
+            graph,
             &mut arena,
             &resources,
             &input.env,
@@ -358,7 +358,7 @@ impl GraphIoEnv for TestIoEnv {
             .get(&pin_id)
             .ok_or(GraphError::MissingGraphInputData(pin_id.clone()))?
         {
-            RequestHandler::Const(val) => Ok(val.clone()),
+            RequestHandler::Const(val) => Ok(*val),
             RequestHandler::ByTime(f) => {
                 let update = ctx.time_update_fwd(pin_id)?;
                 Ok(f(update))
