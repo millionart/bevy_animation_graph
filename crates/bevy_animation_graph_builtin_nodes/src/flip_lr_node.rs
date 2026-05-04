@@ -112,7 +112,7 @@ impl<'de> Deserialize<'de> for FlipLRNode {
     {
         let ser = FlipLRProxy::deserialize(deserializer)?;
 
-        Ok(Self::try_from(&ser)
-            .map_err(|_| serde::de::Error::custom("Failed to parse regular expression"))?)
+        Self::try_from(&ser)
+            .map_err(|_| serde::de::Error::custom("Failed to parse regular expression"))
     }
 }
