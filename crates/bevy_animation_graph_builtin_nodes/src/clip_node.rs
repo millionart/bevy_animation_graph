@@ -4,9 +4,7 @@ use bevy::{
     asset::Handle,
     math::{Quat, Vec3},
     platform::hash::Hashed,
-    prelude::{
-        Animatable, AnimatableProperty, AnimationNodeIndex, EvaluatorId, Transform, VariableCurve,
-    },
+    prelude::{EvaluatorId, Transform, VariableCurve},
     reflect::prelude::*,
 };
 use bevy_animation_graph_core::{
@@ -128,7 +126,9 @@ impl NodeLike for ClipNode {
         for (bone_id, curves) in &clip.curves {
             let mut bone_pose = BonePose::default();
             for curve in curves {
-                let value = sample_animation_curve(curve, clamped_time);
+                let Some(value) = sample_animation_curve(curve, clamped_time) else {
+                    continue;
+                };
                 match value {
                     CurveValue::Translation(t) => bone_pose.translation = Some(t),
                     CurveValue::Rotation(r) => bone_pose.rotation = Some(r),
@@ -168,7 +168,9 @@ impl NodeLike for ClipNode {
                     let mut rot = Quat::IDENTITY;
                     if let Some(curves) = clip.curves.get(&target_id) {
                         for curve in curves {
-                            let value = sample_animation_curve(curve, t);
+                            let Some(value) = sample_animation_curve(curve, t) else {
+                                continue;
+                            };
                             match value {
                                 CurveValue::Translation(v) => tr = v,
                                 CurveValue::Rotation(v) => rot = v,
@@ -334,97 +336,31 @@ enum CurveValue {
 }
 
 /// Sample the animation at a particular time
-// HACK: We really need some API for sampling animation curves in Bevy outside of the builtin
-// animation flow.
-fn sample_animation_curve(curve: &VariableCurve, time: f32) -> CurveValue {
+fn sample_animation_curve(curve: &VariableCurve, time: f32) -> Option<CurveValue> {
     let evaluator_id = curve.0.evaluator_id();
-    let mut evaluator = curve.0.create_evaluator();
-
-    let node_index = AnimationNodeIndex::default();
 
     let translation_evaluator_id = Hashed::new((TypeId::of::<Transform>(), 0));
     let rotation_evaluator_id = Hashed::new((TypeId::of::<Transform>(), 1));
     let scale_evaluator_id = Hashed::new((TypeId::of::<Transform>(), 2));
 
-    curve
-        .0
-        .apply(evaluator.as_mut(), time, 1., node_index)
-        .unwrap();
-
     match evaluator_id {
         EvaluatorId::ComponentField(id) => {
-            // SAFETY: We only have a pointer to the evaluator, but we want to access private
-            // fields. We're essentially telling the compiler: "Hey, operate on this block of
-            // memory from somewhere else as if it had this type".
-            // I would rather not do this, but we don't have sampling APIs yet.
             if id == &translation_evaluator_id {
-                let animatable_evaluator: &AnimatableCurveEvaluator<Vec3> = unsafe {
-                    std::mem::transmute(
-                    evaluator
-                        .downcast_ref::<bevy::animation::prelude::AnimatableCurveEvaluator<Vec3>>()
-                        .unwrap(),
-                 )
-                };
-                let value = animatable_evaluator.evaluator.stack[0].value;
-                CurveValue::Translation(value)
+                Some(CurveValue::Translation(
+                    *curve.0.sample_clamped(time).downcast_ref()?,
+                ))
             } else if id == &rotation_evaluator_id {
-                let animatable_evaluator: &AnimatableCurveEvaluator<Quat> = unsafe {
-                    std::mem::transmute(
-                    evaluator
-                        .downcast_ref::<bevy::animation::prelude::AnimatableCurveEvaluator<Quat>>()
-                        .unwrap(),
-                 )
-                };
-                let value = animatable_evaluator.evaluator.stack[0].value;
-                CurveValue::Rotation(value)
+                Some(CurveValue::Rotation(
+                    *curve.0.sample_clamped(time).downcast_ref()?,
+                ))
             } else if id == &scale_evaluator_id {
-                let animatable_evaluator: &AnimatableCurveEvaluator<Vec3> = unsafe {
-                    std::mem::transmute(
-                    evaluator
-                        .downcast_ref::<bevy::animation::prelude::AnimatableCurveEvaluator<Vec3>>()
-                        .unwrap(),
-                 )
-                };
-                let value = animatable_evaluator.evaluator.stack[0].value;
-                CurveValue::Scale(value)
+                Some(CurveValue::Scale(
+                    *curve.0.sample_clamped(time).downcast_ref()?,
+                ))
             } else {
                 todo!()
             }
         }
         EvaluatorId::Type(_id) => todo!(),
     }
-}
-
-// Why is this here?
-//
-// We need to access private fields in the evaluators in order to "extract" the
-// sampled values. The evaluator trait no longer implements reflect, so our only option
-// is to do a bit of unsafe memory shenanigans.
-// We will transmute a reference of type `&bevy::animation::prelude::AnimatableCurveEvaluator` to
-// `&AnimatableCurveEvaluator`, essentially telling the compiler "operate on the memory pointed to
-// by this reference as if it had this custom type".
-//
-// We should aim to have a better animation curve sampling API in 0.16 in order to avoid having to
-// do this.
-
-pub struct AnimatableCurveEvaluator<A: Animatable> {
-    evaluator: BasicAnimationCurveEvaluator<A>,
-    _property: Box<dyn AnimatableProperty<Property = A>>,
-}
-
-struct BasicAnimationCurveEvaluator<A>
-where
-    A: Animatable,
-{
-    stack: Vec<BasicAnimationCurveEvaluatorStackElement<A>>,
-    _blend_register: Option<(A, f32)>,
-}
-
-struct BasicAnimationCurveEvaluatorStackElement<A>
-where
-    A: Animatable,
-{
-    value: A,
-    _weight: f32,
-    _graph_node: AnimationNodeIndex,
 }
