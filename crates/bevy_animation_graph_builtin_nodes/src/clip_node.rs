@@ -1,6 +1,7 @@
 use std::any::TypeId;
 
 use bevy::{
+    animation::animation_curves::WeightsCurveSample,
     asset::Handle,
     math::{Quat, Vec3},
     platform::hash::Hashed,
@@ -358,9 +359,16 @@ fn sample_animation_curve(curve: &VariableCurve, time: f32) -> Option<CurveValue
                     *curve.0.sample_clamped(time).downcast_ref()?,
                 ))
             } else {
-                todo!()
+                None
             }
         }
-        EvaluatorId::Type(_id) => todo!(),
+        EvaluatorId::Type(_id) => Some(CurveValue::BoneWeights(
+            (*curve
+                .0
+                .sample_clamped(time)
+                .downcast::<WeightsCurveSample>()
+                .ok()?)
+            .0,
+        )),
     }
 }
