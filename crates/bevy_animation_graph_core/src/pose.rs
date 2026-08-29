@@ -159,9 +159,13 @@ impl BonePose {
             either_or_mix(self.translation, other.translation, |a, b| a.lerp(b, alpha));
         self.scale = either_or_mix(self.scale, other.scale, |a, b| a.lerp(b, alpha));
         self.weights = either_or_mix(self.weights.clone(), other.weights.clone(), |a, b| {
-            a.iter()
-                .zip(b)
-                .map(|(old, new)| (new - old) * alpha)
+            let length = a.len().max(b.len());
+            (0..length)
+                .map(|index| {
+                    let old = a.get(index).copied().unwrap_or(0.0);
+                    let new = b.get(index).copied().unwrap_or(0.0);
+                    old + (new - old) * alpha
+                })
                 .collect()
         });
     }
@@ -366,6 +370,57 @@ mod tests {
         // Quaternions q and -q represent the same rotation
         let dot = a.dot(b).abs();
         (1.0 - dot) < epsilon
+    }
+
+    fn approx_eq_weights(actual: &[f32], expected: &[f32], epsilon: f32) -> bool {
+        actual.len() == expected.len()
+            && actual
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| (actual - expected).abs() < epsilon)
+    }
+
+    #[test]
+    fn test_bone_pose_linear_blend_weights_preserves_values() {
+        let base = BonePose {
+            weights: Some(vec![0.6, 0.4]),
+            ..BonePose::default()
+        };
+        let overlay = BonePose {
+            weights: Some(vec![0.8, 0.2]),
+            ..BonePose::default()
+        };
+        let mut at_start = base.clone();
+        at_start.linear_blend_mut(&overlay, 0.0);
+        assert!(approx_eq_weights(
+            at_start.weights.as_deref().unwrap(),
+            &[0.6, 0.4],
+            1e-6
+        ));
+        let mut at_end = base.clone();
+        at_end.linear_blend_mut(&overlay, 1.0);
+        assert!(approx_eq_weights(
+            at_end.weights.as_deref().unwrap(),
+            &[0.8, 0.2],
+            1e-6
+        ));
+        let mut midpoint = base.clone();
+        midpoint.linear_blend_mut(&overlay, 0.5);
+        assert!(approx_eq_weights(
+            midpoint.weights.as_deref().unwrap(),
+            &[0.7, 0.3],
+            1e-6
+        ));
+        let short_overlay = BonePose {
+            weights: Some(vec![0.8]),
+            ..BonePose::default()
+        };
+        midpoint.linear_blend_mut(&short_overlay, 0.5);
+        assert!(approx_eq_weights(
+            midpoint.weights.as_deref().unwrap(),
+            &[0.75, 0.15],
+            1e-6
+        ));
     }
 
     fn make_pose_with_root_motion(translation: Vec3, rotation: Quat) -> Pose {
