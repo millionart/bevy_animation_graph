@@ -117,6 +117,10 @@ impl<'a> GraphContext<'a> {
         &self.context().node_states
     }
 
+    pub fn frame_index(&self) -> u64 {
+        self.context_arena.get_ref().frame_index()
+    }
+
     pub fn space_conversion(&'_ self) -> SpaceConversionContext<'_> {
         SpaceConversionContext {
             pose_fallback: PoseFallbackContext {

@@ -21,6 +21,7 @@ pub struct GraphContextArena {
     contexts: Vec<GraphState>,
     hierarchy: HashMap<SubContextId, GraphContextId>,
     top_level_context: GraphContextId,
+    frame_index: u64,
 }
 
 impl GraphContextArena {
@@ -29,6 +30,7 @@ impl GraphContextArena {
             contexts: vec![GraphState::new(graph_id)],
             hierarchy: HashMap::default(),
             top_level_context: GraphContextId(0),
+            frame_index: 0,
         }
     }
 
@@ -50,6 +52,11 @@ impl GraphContextArena {
         for context in self.contexts.iter_mut() {
             context.next_frame();
         }
+        self.frame_index = self.frame_index.wrapping_add(1);
+    }
+
+    pub fn frame_index(&self) -> u64 {
+        self.frame_index
     }
 
     pub fn get_context_mut(&mut self, id: GraphContextId) -> Option<&mut GraphState> {
