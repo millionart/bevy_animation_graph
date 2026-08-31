@@ -592,19 +592,45 @@ impl FsmEditorWindowState {
         offset: usize,
         total_transitions_for_state_pair: usize,
     ) -> TransitionDrawData {
+        if source_pos.distance_squared(target_pos) <= f32::EPSILON {
+            let lane =
+                offset as f32 - (total_transitions_for_state_pair.saturating_sub(1) as f32 / 2.);
+            let start = source_pos
+                + Vec2::new(
+                    -Self::STATE_WIDTH * 0.25,
+                    -Self::STATE_HEIGHT * 0.5 - lane * 10.,
+                );
+            let end = source_pos
+                + Vec2::new(
+                    Self::STATE_WIDTH * 0.25,
+                    -Self::STATE_HEIGHT * 1.5 - lane * 10.,
+                );
+            let dir = (end - start).normalize_or_zero();
+            let normal = dir.perp();
+            let shaft_end = end - 10. * dir;
+
+            return TransitionDrawData {
+                start,
+                end,
+                normal,
+                dir,
+                shaft_end,
+            };
+        }
+
         let mut direction = target_pos - source_pos;
         let flip = direction.dot(Vec2::Y) < 0.
             || (direction.dot(Vec2::Y) == 0. && direction.dot(Vec2::X) < 0.);
         if flip {
             direction *= -1.;
         }
-        let normal = direction.perp().normalize();
+        let normal = direction.perp().normalize_or_zero();
 
         const SEPARATION: f32 = 10.;
 
         let total_width = (total_transitions_for_state_pair - 1) as f32 * SEPARATION;
         let vec_offset = (-total_width / 2. + SEPARATION * offset as f32) * normal;
-        let dir = (target_pos - source_pos).normalize();
+        let dir = (target_pos - source_pos).normalize_or_zero();
         let start = source_pos + dir * 50. + vec_offset;
         let end = target_pos - dir * 50. + vec_offset;
         let shaft_end = end - 10. * dir;
@@ -1074,5 +1100,22 @@ impl Default for FsmEditorWindowState {
             selected_transitions: Default::default(),
             style_engine,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn self_transition_arrow_uses_finite_geometry() {
+        let data = FsmEditorWindowState::transition_arrow_endpoints(Vec2::ZERO, Vec2::ZERO, 0, 1);
+
+        assert!(data.start.is_finite());
+        assert!(data.end.is_finite());
+        assert!(data.normal.is_finite());
+        assert!(data.dir.is_finite());
+        assert!(data.shaft_end.is_finite());
+        assert!(data.start.distance_squared(data.end) > f32::EPSILON);
     }
 }
