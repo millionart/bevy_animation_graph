@@ -1,4 +1,4 @@
-use std::any::Any;
+use std::{any::Any, sync::Arc};
 
 use bevy::{
     platform::collections::HashMap,
@@ -30,8 +30,8 @@ pub enum StateKey {
 
 #[derive(Default, Clone, Debug, Reflect)]
 pub struct NodeState {
-    last_state: Option<NodeStateBox>,
-    upcoming_state: HashMap<StateKey, NodeStateBox>,
+    last_state: Option<Arc<NodeStateBox>>,
+    upcoming_state: HashMap<StateKey, Arc<NodeStateBox>>,
 
     /// Most nodes need to keep track of time. We handle this separately
     /// to avoid overhead of Box if possible
@@ -83,18 +83,15 @@ impl NodeState {
             upcoming_state,
             ..
         } = self;
-        let dyn_mut: &mut dyn Any = upcoming_state
-            .entry(key)
-            .or_insert_with(|| {
-                last_state
-                    .as_ref()
-                    .map(|s| s.clone())
-                    .unwrap_or_else(|| NodeStateBox {
-                        value: Box::new(default()),
-                    })
+        let dyn_mut: &mut dyn Any = Arc::make_mut(upcoming_state.entry(key).or_insert_with(|| {
+            last_state.as_ref().cloned().unwrap_or_else(|| {
+                Arc::new(NodeStateBox {
+                    value: Box::new(default()),
+                })
             })
-            .value
-            .as_mut();
+        }))
+        .value
+        .as_mut();
 
         dyn_mut
             .downcast_mut::<T>()
@@ -204,6 +201,90 @@ mod tests {
                 clones: self.clones.clone(),
             }
         }
+    }
+
+    #[test]
+    fn snapshot_clones_only_mutated_node_values() {
+        let mut states = NodeStates::default();
+        let clones = Arc::<AtomicUsize>::default();
+        let node = NodeId::default();
+        states
+            .get_mut_or_insert_with(node, StateKey::Default, || TrackedState {
+                value: 7,
+                clones: clones.clone(),
+            })
+            .unwrap();
+        states.next_frame();
+        let temporary = StateKey::Temporary(Uuid::new_v4());
+        states
+            .get_mut_or_insert_with::<TrackedState>(node, temporary, || unreachable!())
+            .unwrap()
+            .value = 9;
+        clones.store(0, Ordering::Relaxed);
+        let mut snapshot = states.clone();
+        assert_eq!(
+            clones.load(Ordering::Relaxed),
+            0,
+            "snapshot copied unvisited state"
+        );
+        assert_eq!(
+            snapshot
+                .get::<TrackedState>(node, StateKey::Default)
+                .unwrap()
+                .value,
+            7
+        );
+        assert_eq!(
+            snapshot.get::<TrackedState>(node, temporary).unwrap().value,
+            9
+        );
+        snapshot
+            .get_mut_or_insert_with::<TrackedState>(node, temporary, || unreachable!())
+            .unwrap()
+            .value = 11;
+        assert_eq!(clones.load(Ordering::Relaxed), 1);
+        snapshot
+            .get_mut_or_insert_with::<TrackedState>(node, temporary, || unreachable!())
+            .unwrap()
+            .value = 13;
+        assert_eq!(clones.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            states.get::<TrackedState>(node, temporary).unwrap().value,
+            9
+        );
+        assert_eq!(
+            snapshot.get::<TrackedState>(node, temporary).unwrap().value,
+            13
+        );
+        snapshot
+            .get_mut_or_insert_with::<TrackedState>(node, StateKey::Default, || unreachable!())
+            .unwrap()
+            .value = 17;
+        snapshot.next_frame();
+        assert_eq!(
+            snapshot
+                .get::<TrackedState>(node, StateKey::Default)
+                .unwrap()
+                .value,
+            17
+        );
+        assert_eq!(
+            states
+                .get::<TrackedState>(node, StateKey::Default)
+                .unwrap()
+                .value,
+            7
+        );
+        assert_eq!(clones.load(Ordering::Relaxed), 2);
+        states.clear();
+        snapshot.next_frame();
+        assert_eq!(
+            snapshot
+                .get::<TrackedState>(node, StateKey::Default)
+                .unwrap()
+                .value,
+            17
+        );
     }
 
     #[test]

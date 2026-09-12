@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bevy::{
     platform::collections::{HashMap, HashSet},
     reflect::Reflect,
@@ -28,7 +30,7 @@ pub struct NodeCache {
 
 #[derive(Reflect, Clone, Default, Debug)]
 pub struct NodeCaches {
-    caches: HashMap<NodeId, NodeCache>,
+    caches: HashMap<NodeId, Arc<NodeCache>>,
 }
 
 impl NodeCaches {
@@ -133,6 +135,70 @@ impl NodeCaches {
     }
 
     fn cache_mut(&mut self, node_id: NodeId) -> &mut NodeCache {
-        self.caches.entry(node_id).or_default()
+        Arc::make_mut(self.caches.entry(node_id).or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pose::{BonePose, Pose};
+
+    #[test]
+    fn snapshot_shares_cached_pose_until_the_node_changes() {
+        let node = NodeId::default();
+        let key = StateKey::Default;
+        let pin = "pose".to_owned();
+        let mut pose = Pose::default();
+        pose.add_bone(BonePose::default(), Default::default());
+        let mut caches = NodeCaches::default();
+        caches.set_output_data(node, key, pin.clone(), pose.into());
+        let mut snapshot = caches.clone();
+        let pose_values = |caches: &NodeCaches| {
+            let DataValue::Pose(pose) = &caches.caches[&node].output_data[&(key, pin.clone())]
+            else {
+                panic!("cached value is not a pose");
+            };
+            pose.bones.as_ptr()
+        };
+        assert_eq!(
+            pose_values(&snapshot),
+            pose_values(&caches),
+            "snapshot copied unread pose"
+        );
+        snapshot.set_duration(node, key, Some(2.0));
+        assert_ne!(pose_values(&snapshot), pose_values(&caches));
+        assert!(caches.get_duration(node, key).is_err());
+        assert_eq!(snapshot.get_duration(node, key).unwrap(), Some(2.0));
+        snapshot.set_output_data(
+            node,
+            key,
+            pin.clone(),
+            Pose {
+                timestamp: 3.0,
+                ..Default::default()
+            }
+            .into(),
+        );
+        assert_eq!(
+            snapshot
+                .get_output_data(node, key, pin.clone())
+                .unwrap()
+                .into_pose()
+                .unwrap()
+                .timestamp,
+            3.0
+        );
+        assert_eq!(
+            caches
+                .get_output_data(node, key, pin)
+                .unwrap()
+                .into_pose()
+                .unwrap()
+                .timestamp,
+            0.0
+        );
+        caches.next_frame();
+        assert_eq!(snapshot.get_duration(node, key).unwrap(), Some(2.0));
     }
 }
