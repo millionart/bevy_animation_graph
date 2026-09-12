@@ -16,7 +16,8 @@ pub struct SubContextId {
     pub state_id: Option<LowLevelStateId>,
 }
 
-#[derive(Reflect, Debug)]
+#[derive(Reflect, Clone, Debug)]
+#[reflect(Clone)]
 pub struct GraphContextArena {
     contexts: Vec<GraphState>,
     hierarchy: HashMap<SubContextId, GraphContextId>,
@@ -117,5 +118,176 @@ impl GraphContextArenaRef {
     #[allow(clippy::mut_from_ref)]
     pub fn get_ref(&self) -> &GraphContextArena {
         unsafe { self.context.as_ref().unwrap() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        animation_graph::TimeUpdate,
+        context::{graph_context::QueryOutputTime, node_states::StateKey},
+        pose::{BonePose, Pose},
+    };
+    use bevy::{asset::Handle, math::Vec3, reflect::PartialReflect};
+
+    #[derive(Clone, Debug, Reflect)]
+    struct PrivateState {
+        value: u64,
+        #[reflect(ignore)]
+        private_values: Vec<u64>,
+    }
+
+    #[test]
+    fn snapshot_clone_preserves_hierarchy_caches_and_isolates_state() {
+        let graph = Handle::<AnimationGraph>::default().id();
+        let mut arena = GraphContextArena::new(graph);
+        let node = NodeId::default();
+        let child_key = SubContextId {
+            ctx_id: arena.get_toplevel_id(),
+            node_id: node,
+            state_id: None,
+        };
+        let child = arena.get_sub_context_or_insert_default(child_key.clone(), graph);
+        let temporary = StateKey::Temporary(uuid::Uuid::new_v4());
+        let state = arena.get_context_mut(child).unwrap();
+        state
+            .node_states
+            .get_mut_or_insert_with(node, StateKey::Default, || PrivateState {
+                value: 7,
+                private_values: vec![11],
+            })
+            .unwrap();
+        state.node_states.set_time(node, StateKey::Default, 0.25);
+        arena.next_frame();
+        let state = arena.get_context_mut(child).unwrap();
+        state
+            .node_states
+            .get_mut_or_insert_with::<PrivateState>(node, temporary, || unreachable!())
+            .unwrap()
+            .value = 9;
+        state.node_states.set_time(node, temporary, 0.5);
+        let mut pose = Pose {
+            timestamp: 0.5,
+            ..Default::default()
+        };
+        pose.add_bone(
+            BonePose {
+                translation: Some(Vec3::new(1.0, 2.0, 3.0)),
+                ..Default::default()
+            },
+            Default::default(),
+        );
+        state
+            .node_caches
+            .set_output_data(node, temporary, "pose".into(), pose.into());
+        state
+            .node_caches
+            .set_output_data(node, StateKey::Default, "weight".into(), 0.5_f32.into());
+        state.node_caches.mark_update_started(node, temporary);
+        state.node_caches.mark_updated(node, temporary);
+        state.node_caches.set_duration(node, temporary, Some(1.0));
+        state
+            .node_caches
+            .set_output_time_update(node, temporary, TimeUpdate::Delta(0.1));
+        state.node_caches.set_input_time_update(
+            node,
+            temporary,
+            "time".into(),
+            TimeUpdate::Absolute(0.5),
+        );
+        state.query_output_time = QueryOutputTime::from_key(temporary, TimeUpdate::Absolute(0.5));
+        let mut snapshot: GraphContextArena = arena.clone();
+        let reflected = arena
+            .reflect_clone()
+            .unwrap()
+            .take::<GraphContextArena>()
+            .unwrap();
+        for copy in [&snapshot, &reflected] {
+            assert_eq!(copy.frame_index(), 1);
+            assert_eq!(copy.hierarchy[&child_key], child);
+            assert_eq!(copy.iter_context_ids().count(), 2);
+            let state = copy.get_context(child).unwrap();
+            assert_eq!(state.get_graph_id(), graph);
+            assert_eq!(
+                state
+                    .node_states
+                    .get::<PrivateState>(node, StateKey::Default)
+                    .unwrap()
+                    .value,
+                7
+            );
+            assert_eq!(
+                state
+                    .node_states
+                    .get::<PrivateState>(node, temporary)
+                    .unwrap()
+                    .value,
+                9
+            );
+            assert_eq!(
+                state
+                    .node_states
+                    .get::<PrivateState>(node, temporary)
+                    .unwrap()
+                    .private_values,
+                [11]
+            );
+            assert_eq!(state.node_states.get_last_time(node), 0.25);
+            assert_eq!(state.node_states.get_time(node, temporary), 0.5);
+            assert!(state.node_caches.is_update_started(node, temporary));
+            assert!(state.node_caches.is_updated(node, temporary));
+            assert_eq!(
+                state.node_caches.get_duration(node, temporary).unwrap(),
+                Some(1.0)
+            );
+            assert!(
+                matches!(state.node_caches.get_output_time_update(node, temporary), Ok(TimeUpdate::Delta(v)) if v == 0.1)
+            );
+            assert!(
+                matches!(state.node_caches.get_input_time_update(node, temporary, "time".into()), Ok(TimeUpdate::Absolute(v)) if v == 0.5)
+            );
+            assert!(
+                matches!(state.query_output_time.get(temporary), Some(TimeUpdate::Absolute(v)) if v == 0.5)
+            );
+            let pose = state
+                .node_caches
+                .get_output_data(node, temporary, "pose".into())
+                .unwrap()
+                .into_pose()
+                .unwrap();
+            assert_eq!(pose.timestamp, 0.5);
+            assert_eq!(pose.bones[0].translation, Some(Vec3::new(1.0, 2.0, 3.0)));
+            assert_eq!(
+                state
+                    .node_caches
+                    .get_output_data(node, StateKey::Default, "weight".into())
+                    .unwrap()
+                    .as_f32()
+                    .unwrap(),
+                0.5
+            );
+        }
+        snapshot.get_context_mut(child).unwrap().node_states.clear();
+        snapshot.next_frame();
+        let original = arena.get_context(child).unwrap();
+        assert_eq!(
+            original
+                .node_states
+                .get::<PrivateState>(node, temporary)
+                .unwrap()
+                .value,
+            9
+        );
+        assert!(original.node_caches.is_updated(node, temporary));
+        assert_eq!(arena.frame_index(), 1);
+        assert_eq!(snapshot.frame_index(), 2);
+        assert!(
+            !snapshot
+                .get_context(child)
+                .unwrap()
+                .node_caches
+                .is_updated(node, temporary)
+        );
     }
 }
