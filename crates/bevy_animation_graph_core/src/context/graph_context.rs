@@ -8,7 +8,7 @@ use crate::{
     },
 };
 
-#[derive(Debug, Reflect)]
+#[derive(Debug, Clone, Reflect)]
 pub struct GraphState {
     pub node_states: NodeStates,
     pub node_caches: NodeCaches,
@@ -36,7 +36,7 @@ impl GraphState {
     }
 }
 
-#[derive(Debug, Reflect)]
+#[derive(Debug, Clone, Reflect)]
 pub enum QueryOutputTime {
     None,
     Forced(TimeUpdate),

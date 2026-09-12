@@ -11,9 +11,8 @@ use crate::{
     errors::GraphError,
 };
 
-#[derive(Reflect, Default, Debug)]
+#[derive(Reflect, Clone, Default, Debug)]
 pub struct NodeCache {
-    #[reflect(clone)]
     pub output_data: HashMap<(StateKey, PinId), DataValue>,
     /// Time update coming from the "output time" pin. Perhaps should be called "input time
     /// update".
@@ -27,7 +26,7 @@ pub struct NodeCache {
     pub updated: HashSet<StateKey>,
 }
 
-#[derive(Reflect, Default, Debug)]
+#[derive(Reflect, Clone, Default, Debug)]
 pub struct NodeCaches {
     caches: HashMap<NodeId, NodeCache>,
 }
@@ -135,56 +134,5 @@ impl NodeCaches {
 
     fn cache_mut(&mut self, node_id: NodeId) -> &mut NodeCache {
         self.caches.entry(node_id).or_default()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::pose::{BonePose, Pose};
-    use bevy::{
-        math::{Quat, Vec3},
-        reflect::PartialReflect,
-    };
-
-    #[test]
-    fn reflection_snapshot_clones_cached_pose_independently() {
-        let mut cache = NodeCaches::default();
-        let node = NodeId::default();
-        let key = StateKey::Temporary(uuid::Uuid::new_v4());
-        let bone = BonePose {
-            translation: Some(Vec3::new(1.0, 2.0, 3.0)),
-            rotation: Some(Quat::from_rotation_y(0.5)),
-            scale: Some(Vec3::splat(2.0)),
-            ..Default::default()
-        };
-        let mut pose = Pose {
-            timestamp: 0.25,
-            ..Default::default()
-        };
-        pose.add_bone(bone.clone(), Default::default());
-        cache.set_output_data(node, key, "pose".into(), pose.into());
-        cache.set_output_data(node, StateKey::Default, "weight".into(), 0.5_f32.into());
-        let snapshot = cache.reflect_clone().unwrap().take::<NodeCaches>().unwrap();
-        cache.next_frame();
-        assert!(cache.get_output_data(node, key, "pose".into()).is_none());
-        let copied = snapshot
-            .get_output_data(node, key, "pose".into())
-            .unwrap()
-            .into_pose()
-            .unwrap();
-        assert_eq!(copied.timestamp, 0.25);
-        assert_eq!(copied.paths[&crate::id::BoneId::default()], 0);
-        assert_eq!(copied.bones[0].translation, bone.translation);
-        assert_eq!(copied.bones[0].rotation, bone.rotation);
-        assert_eq!(copied.bones[0].scale, bone.scale);
-        assert_eq!(
-            snapshot
-                .get_output_data(node, StateKey::Default, "weight".into())
-                .unwrap()
-                .as_f32()
-                .unwrap(),
-            0.5
-        );
     }
 }

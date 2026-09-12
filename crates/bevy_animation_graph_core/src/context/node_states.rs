@@ -28,7 +28,7 @@ pub enum StateKey {
     Temporary(Uuid),
 }
 
-#[derive(Default, Debug, Reflect)]
+#[derive(Default, Clone, Debug, Reflect)]
 pub struct NodeState {
     last_state: Option<NodeStateBox>,
     upcoming_state: HashMap<StateKey, NodeStateBox>,
@@ -41,8 +41,8 @@ pub struct NodeState {
 
 impl NodeState {
     pub fn next_frame(&mut self) {
-        if let Some(next_state) = self.upcoming_state.get(&StateKey::Default) {
-            self.last_state = Some(next_state.clone());
+        if let Some(next_state) = self.upcoming_state.remove(&StateKey::Default) {
+            self.last_state = Some(next_state);
         }
 
         if let Some(next_time) = self.upcoming_time.get(&StateKey::Default) {
@@ -117,7 +117,7 @@ impl NodeState {
     }
 }
 
-#[derive(Debug, Reflect, Default)]
+#[derive(Debug, Clone, Reflect, Default)]
 pub struct NodeStates {
     states: HashMap<NodeId, NodeState>,
 }
@@ -178,5 +178,78 @@ impl NodeStates {
 
     pub fn clear(&mut self) {
         self.states.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(Debug, Reflect)]
+    struct TrackedState {
+        value: u64,
+        #[reflect(ignore)]
+        clones: Arc<AtomicUsize>,
+    }
+
+    impl Clone for TrackedState {
+        fn clone(&self) -> Self {
+            self.clones.fetch_add(1, Ordering::Relaxed);
+            Self {
+                value: self.value,
+                clones: self.clones.clone(),
+            }
+        }
+    }
+
+    #[test]
+    fn frame_commit_moves_completed_state_without_cloning() {
+        let mut node = NodeState::default();
+        let clones = Arc::<AtomicUsize>::default();
+        node.get_mut_or_insert_with(StateKey::Default, || TrackedState {
+            value: 7,
+            clones: clones.clone(),
+        })
+        .unwrap();
+        node.set_time(StateKey::Default, 0.25);
+        node.next_frame();
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            node.get_state::<TrackedState>(StateKey::Default)
+                .unwrap()
+                .value,
+            7
+        );
+        assert_eq!(node.get_last_time(), 0.25);
+        let temporary = StateKey::Temporary(Uuid::new_v4());
+        node.get_mut_or_insert_with::<TrackedState>(temporary, || unreachable!())
+            .unwrap()
+            .value = 9;
+        assert_eq!(clones.load(Ordering::Relaxed), 1);
+        node.next_frame();
+        assert_eq!(
+            node.get_state::<TrackedState>(StateKey::Default)
+                .unwrap()
+                .value,
+            7
+        );
+        node.get_mut_or_insert_with::<TrackedState>(StateKey::Default, || unreachable!())
+            .unwrap()
+            .value = 11;
+        node.set_time(StateKey::Default, 0.5);
+        assert_eq!(clones.load(Ordering::Relaxed), 2);
+        node.next_frame();
+        assert_eq!(clones.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            node.get_state::<TrackedState>(StateKey::Default)
+                .unwrap()
+                .value,
+            11
+        );
+        assert_eq!(node.get_last_time(), 0.5);
     }
 }
