@@ -94,7 +94,16 @@ impl GraphContextArena {
             self.hierarchy.insert(subctx_id.clone(), child_node_id);
         }
 
-        *self.hierarchy.get(&subctx_id).unwrap()
+        let context_id = *self.hierarchy.get(&subctx_id).unwrap();
+        if self.contexts[context_id.0].get_graph_id() != subgraph_id {
+            let mut pending = vec![context_id];
+            while let Some(current) = pending.pop() {
+                let graph_id = if current == context_id { subgraph_id } else { self.contexts[current.0].get_graph_id() };
+                self.contexts[current.0] = GraphState::new(graph_id);
+                pending.extend(self.hierarchy.iter().filter_map(|(parent, child)| (parent.ctx_id == current).then_some(*child)));
+            }
+        }
+        context_id
     }
 }
 
@@ -136,6 +145,50 @@ mod tests {
         value: u64,
         #[reflect(ignore)]
         private_values: Vec<u64>,
+    }
+
+    #[test]
+    fn replacing_a_child_graph_resets_only_its_subtree() {
+        use bevy::asset::Assets;
+        use crate::state_machine::high_level::StateId;
+        let mut assets = Assets::<AnimationGraph>::default();
+        let graphs = [0, 1, 2, 3].map(|_| assets.add(AnimationGraph::new()));
+        let mut arena = GraphContextArena::new(graphs[0].id());
+        let root = arena.get_toplevel_id();
+        let node = NodeId::default();
+        let key = SubContextId { ctx_id:root, node_id:node, state_id:None };
+        let child = arena.get_sub_context_or_insert_default(key.clone(), graphs[1].id());
+        let grandchild = arena.get_sub_context_or_insert_default(SubContextId { ctx_id:child, node_id:node, state_id:None }, graphs[1].id());
+        let sibling = arena.get_sub_context_or_insert_default(SubContextId { ctx_id:root, node_id:node, state_id:Some(LowLevelStateId::HlState(StateId::default())) }, graphs[2].id());
+        for context in [root, child, grandchild, sibling] {
+            let state = arena.get_context_mut(context).unwrap();
+            state.node_states.get_mut_or_insert_with(node, StateKey::Default, || PrivateState { value:7, private_values:vec![11] }).unwrap();
+            state.node_states.set_time(node, StateKey::Default, 0.5);
+            state.node_caches.set_output_data(node, StateKey::Default, "value".into(), 0.5_f32.into());
+            state.node_caches.mark_update_started(node, StateKey::Default);
+            state.node_caches.mark_updated(node, StateKey::Default);
+            state.query_output_time = QueryOutputTime::Forced(TimeUpdate::Delta(0.25));
+        }
+        assert_eq!(arena.get_sub_context_or_insert_default(key.clone(), graphs[1].id()), child);
+        assert_eq!(arena.get_context(child).unwrap().node_states.get::<PrivateState>(node, StateKey::Default).unwrap().value, 7);
+        assert_eq!(arena.get_sub_context_or_insert_default(key.clone(), graphs[3].id()), child);
+        assert_eq!(arena.get_context(child).unwrap().get_graph_id(), graphs[3].id());
+        for context in [child, grandchild] {
+            let state = arena.get_context(context).unwrap();
+            assert!(state.node_states.get::<PrivateState>(node, StateKey::Default).is_err());
+            assert!(!state.node_caches.is_updated(node, StateKey::Default));
+            assert!(state.node_caches.get_output_data(node, StateKey::Default, "value".into()).is_none());
+            assert!(matches!(state.query_output_time, QueryOutputTime::None));
+        }
+        for context in [root, sibling] {
+            let state = arena.get_context(context).unwrap();
+            assert_eq!(state.node_states.get::<PrivateState>(node, StateKey::Default).unwrap().value, 7);
+            assert!(state.node_caches.is_updated(node, StateKey::Default));
+        }
+        for index in 0..16 {
+            assert_eq!(arena.get_sub_context_or_insert_default(key.clone(), graphs[if index % 2 == 0 { 1 } else { 3 }].id()), child);
+        }
+        assert_eq!(arena.iter_context_ids().count(), 4);
     }
 
     #[test]
