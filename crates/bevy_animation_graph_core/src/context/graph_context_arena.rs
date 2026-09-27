@@ -49,6 +49,10 @@ impl GraphContextArena {
         self.contexts.get(id.0)
     }
 
+    pub fn get_parent_context(&self, id: GraphContextId) -> Option<&SubContextId> {
+        self.hierarchy.iter().find_map(|(parent, child)| (*child == id).then_some(parent))
+    }
+
     pub fn next_frame(&mut self) {
         for context in self.contexts.iter_mut() {
             context.next_frame();
@@ -160,6 +164,10 @@ mod tests {
         let child = arena.get_sub_context_or_insert_default(key.clone(), graphs[1].id());
         let grandchild = arena.get_sub_context_or_insert_default(SubContextId { ctx_id:child, node_id:node, state_id:None }, graphs[1].id());
         let sibling = arena.get_sub_context_or_insert_default(SubContextId { ctx_id:root, node_id:node, state_id:Some(LowLevelStateId::HlState(StateId::default())) }, graphs[2].id());
+        assert_eq!(arena.get_parent_context(root), None);
+        assert_eq!(arena.get_parent_context(child), Some(&key));
+        assert_eq!(arena.get_parent_context(grandchild).unwrap().ctx_id, child);
+        assert!(arena.get_parent_context(sibling).unwrap().state_id.is_some());
         for context in [root, child, grandchild, sibling] {
             let state = arena.get_context_mut(context).unwrap();
             state.node_states.get_mut_or_insert_with(node, StateKey::Default, || PrivateState { value:7, private_values:vec![11] }).unwrap();
@@ -172,6 +180,7 @@ mod tests {
         assert_eq!(arena.get_sub_context_or_insert_default(key.clone(), graphs[1].id()), child);
         assert_eq!(arena.get_context(child).unwrap().node_states.get::<PrivateState>(node, StateKey::Default).unwrap().value, 7);
         assert_eq!(arena.get_sub_context_or_insert_default(key.clone(), graphs[3].id()), child);
+        assert_eq!(arena.get_parent_context(child), Some(&key));
         assert_eq!(arena.get_context(child).unwrap().get_graph_id(), graphs[3].id());
         for context in [child, grandchild] {
             let state = arena.get_context(context).unwrap();
