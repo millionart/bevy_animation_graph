@@ -235,12 +235,12 @@ pub fn spawn_ragdoll_avian(
             .insert((JointLabel(joint.label.clone()), JointCollisionDisabled));
         commands.entity(root).add_child(joint_entity);
         spawned.joints.insert(joint.id, joint_entity);
-
-        commands.trigger(RagdollSpawned {
-            ragdoll: root,
-            animation_player: player_entity,
-        });
     }
+
+    commands.trigger(RagdollSpawned {
+        ragdoll: root,
+        animation_player: player_entity,
+    });
 
     spawned
 }
