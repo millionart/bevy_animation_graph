@@ -47,6 +47,7 @@ pub fn read_pose(
         let Some(mut weighted_transforms) = bone_mapping
             .bodies
             .iter()
+            .filter(|body_weight| body_weight.weight > 0.0)
             .filter_map(|body_weight| {
                 let body_entity = spawned_ragdoll.bodies.get(&body_weight.body)?;
                 let (pos, rot) = query.get(*body_entity).ok()?;
@@ -64,7 +65,11 @@ pub fn read_pose(
             })
             .reduce(|left, right| Transform {
                 translation: left.translation + right.translation,
-                rotation: left.rotation + right.rotation,
+                rotation: if left.rotation.dot(right.rotation) < 0.0 {
+                    left.rotation - right.rotation
+                } else {
+                    left.rotation + right.rotation
+                },
                 scale: left.scale + right.scale,
             })
         else {
