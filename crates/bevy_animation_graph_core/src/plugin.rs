@@ -75,30 +75,25 @@ pub enum AnimationPlaybackSystems {
 struct DefaultPlayback;
 
 impl Plugin for AnimationGraphPlayback {
-    fn build(&self, app: &mut App) {
-        if let Some(core) = app.get_added_plugins::<AnimationGraphCorePlugin>().first() {
-            let (physics, pose) = (core.physics_schedule, core.final_schedule);
-            (self.physics)(app, physics);
-            (self.pose)(app, pose);
-        }
-    }
+    fn build(&self, _app: &mut App) {}
 
     fn finish(&self, app: &mut App) {
         // A host may install its playback after a dependency already installed the standard plugin.
         let Some((physics, pose)) = app.get_added_plugins::<AnimationGraphCorePlugin>()
             .first()
             .map(|core| (core.physics_schedule, core.final_schedule)) else { return };
-        let mut remove_defaults = |schedule| {
-            if app.get_schedule(schedule)
-                .is_some_and(|s| s.graph().system_sets.contains(DefaultPlayback)) {
-                app.remove_systems_in_set(schedule, DefaultPlayback, ScheduleCleanupPolicy::RemoveSystemsOnly)
-                    .expect("registered graph playback schedule");
-            }
-        };
-        remove_defaults(physics);
-        if pose != physics {
-            remove_defaults(pose);
+        if !app.get_schedule(physics).is_some_and(|s| s.graph().system_sets.contains(DefaultPlayback)) {
+            return; // The core installed this host's callbacks during build.
         }
+        // Bevy validates before removal. Finish removing the old writers before adding any replacements.
+        app.remove_systems_in_set(physics, DefaultPlayback, ScheduleCleanupPolicy::RemoveSetAndSystems)
+            .expect("registered graph sampling schedule");
+        if pose != physics {
+            app.remove_systems_in_set(pose, DefaultPlayback, ScheduleCleanupPolicy::RemoveSetAndSystems)
+                .expect("registered graph presentation schedule");
+        }
+        (self.physics)(app, physics);
+        (self.pose)(app, pose);
     }
 }
 
