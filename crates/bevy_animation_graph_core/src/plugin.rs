@@ -5,7 +5,7 @@ use bevy::{
     asset::AssetApp,
     ecs::{
         intern::Interned,
-        schedule::{IntoScheduleConfigs, ScheduleLabel, SystemSet},
+        schedule::{IntoScheduleConfigs, ScheduleCleanupPolicy, ScheduleLabel, SystemSet},
     },
     reflect::prelude::ReflectDefault,
     transform::TransformSystems,
@@ -49,6 +49,57 @@ use crate::{
 pub struct AnimationGraphCorePlugin {
     pub physics_schedule: Interned<dyn ScheduleLabel>,
     pub final_schedule: Interned<dyn ScheduleLabel>,
+}
+
+/// Installs a host's graph sampling and presentation systems at startup.
+/// The physics callback receives the schedule driving the solver. The pose callback
+/// receives the display schedule. Adding this first skips the standard playback systems.
+#[derive(Clone, Copy)]
+pub struct AnimationGraphPlayback {
+    pub physics: fn(&mut App, Interned<dyn ScheduleLabel>),
+    pub pose: fn(&mut App, Interned<dyn ScheduleLabel>),
+}
+
+/// Ordered integration points for graph players, ragdoll drivers and visible skeletons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, SystemSet)]
+pub enum AnimationPlaybackSystems {
+    /// Sample animation after ragdoll spawning and before updating bodies.
+    Sample,
+    /// Write position-based kinematic velocities from the new ragdoll targets.
+    KinematicTargets,
+    /// Apply the display pose before drawing animation gizmos.
+    WritePose,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, SystemSet)]
+struct DefaultPlayback;
+
+impl Plugin for AnimationGraphPlayback {
+    fn build(&self, app: &mut App) {
+        if let Some(core) = app.get_added_plugins::<AnimationGraphCorePlugin>().first() {
+            let (physics, pose) = (core.physics_schedule, core.final_schedule);
+            (self.physics)(app, physics);
+            (self.pose)(app, pose);
+        }
+    }
+
+    fn finish(&self, app: &mut App) {
+        // A host may install its playback after a dependency already installed the standard plugin.
+        let Some((physics, pose)) = app.get_added_plugins::<AnimationGraphCorePlugin>()
+            .first()
+            .map(|core| (core.physics_schedule, core.final_schedule)) else { return };
+        let mut remove_defaults = |schedule| {
+            if app.get_schedule(schedule)
+                .is_some_and(|s| s.graph().system_sets.contains(DefaultPlayback)) {
+                app.remove_systems_in_set(schedule, DefaultPlayback, ScheduleCleanupPolicy::RemoveSystemsOnly)
+                    .expect("registered graph playback schedule");
+            }
+        };
+        remove_defaults(physics);
+        if pose != physics {
+            remove_defaults(pose);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq, Hash, SystemSet)]
@@ -97,41 +148,56 @@ impl Plugin for AnimationGraphCorePlugin {
         }
 
         app.add_systems(PreUpdate, spawn_animated_scenes);
-
-        app.add_systems(
+        app.configure_sets(
             self.physics_schedule,
-            (
-                #[cfg(feature = "physics_avian")]
-                spawn_missing_ragdolls_avian,
-                animation_player,
-                extract_root_motion,
-                #[cfg(feature = "physics_avian")]
-                update_ragdoll_rigidbodies,
-                #[cfg(feature = "physics_avian")]
-                update_ragdolls_avian,
-                #[cfg(feature = "physics_avian")]
-                update_relative_kinematic_position_based_body_velocities,
-                #[cfg(feature = "physics_avian")]
-                update_relative_kinematic_body_velocities,
-            )
+            (AnimationPlaybackSystems::Sample, AnimationPlaybackSystems::KinematicTargets)
                 .chain()
                 .in_set(AnimationGraphSet::PrePhysics),
+        ).configure_sets(
+            self.final_schedule,
+            AnimationPlaybackSystems::WritePose.in_set(AnimationGraphSet::Final),
         );
 
         #[cfg(feature = "physics_avian")]
         app.add_systems(
             self.physics_schedule,
-            read_back_poses_avian
-                .chain()
-                .in_set(AnimationGraphSet::PostPhysics),
+            (
+                spawn_missing_ragdolls_avian.before(AnimationPlaybackSystems::Sample),
+                (update_ragdoll_rigidbodies, update_ragdolls_avian).chain()
+                    .after(AnimationPlaybackSystems::Sample)
+                    .before(AnimationPlaybackSystems::KinematicTargets),
+                update_relative_kinematic_body_velocities.after(AnimationPlaybackSystems::KinematicTargets),
+            ).in_set(AnimationGraphSet::PrePhysics),
         );
 
         app.add_systems(
             self.final_schedule,
-            (apply_animation_to_targets, animation_player_deferred_gizmos)
-                .chain()
-                .in_set(AnimationGraphSet::Final),
+            animation_player_deferred_gizmos.after(AnimationPlaybackSystems::WritePose).in_set(AnimationGraphSet::Final),
         );
+
+        if let Some(playback) = app.get_added_plugins::<AnimationGraphPlayback>().into_iter().copied().next() {
+            (playback.physics)(app, self.physics_schedule);
+            (playback.pose)(app, self.final_schedule);
+        } else {
+            app.add_systems(
+                self.physics_schedule,
+                (animation_player, extract_root_motion).chain()
+                    .in_set(AnimationPlaybackSystems::Sample)
+                    .in_set(DefaultPlayback),
+            );
+            #[cfg(feature = "physics_avian")]
+            app.add_systems(
+                self.physics_schedule,
+                (
+                    update_relative_kinematic_position_based_body_velocities.in_set(AnimationPlaybackSystems::KinematicTargets),
+                    read_back_poses_avian.in_set(AnimationGraphSet::PostPhysics),
+                ).in_set(DefaultPlayback),
+            );
+            app.add_systems(
+                self.final_schedule,
+                apply_animation_to_targets.in_set(AnimationPlaybackSystems::WritePose).in_set(DefaultPlayback),
+            );
+        }
 
         app.add_observer(locate_animated_scene_player);
     }

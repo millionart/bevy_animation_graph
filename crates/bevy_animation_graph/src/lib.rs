@@ -192,6 +192,7 @@ use bevy::{
 };
 use bevy_animation_graph_builtin_nodes::BuiltinNodesPlugin;
 use bevy_animation_graph_core::plugin::AnimationGraphCorePlugin;
+pub use bevy_animation_graph_core::plugin::{AnimationGraphPlayback, AnimationPlaybackSystems};
 
 pub mod core {
     pub use bevy_animation_graph_core::*;
