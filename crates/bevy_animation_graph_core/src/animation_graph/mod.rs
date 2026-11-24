@@ -712,7 +712,8 @@ impl AnimationGraph {
                 }
 
                 ctx.node_caches()
-                    .get_output_data(*node_id, key, node_pin.clone())
+                    .get_output_data_ref(*node_id, key, node_pin)
+                    .cloned()
                     .ok_or_else(|| GraphError::OutputMissing {
                         graph: ctx.context_id,
                         node: *node_id,
@@ -799,7 +800,7 @@ impl AnimationGraph {
                     self.node_update_wrapper(node, &mut ctx)?;
                 }
                 ctx.node_caches()
-                    .get_input_time_update(*node_id, key, target_pin.clone())
+                    .get_input_time_update_by_pin(*node_id, key, target_pin)
                     .or_else(|e| {
                         node.try_get_time(
                             ctx.create_node_context(node.id)

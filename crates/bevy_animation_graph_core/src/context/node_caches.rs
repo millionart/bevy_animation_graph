@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use bevy::{
-    platform::collections::{HashMap, HashSet},
+    platform::collections::{Equivalent, HashMap, HashSet},
     reflect::Reflect,
 };
 
@@ -33,6 +33,15 @@ pub struct NodeCaches {
     caches: HashMap<NodeId, Arc<NodeCache>>,
 }
 
+#[derive(Hash)]
+struct PinLookup<'a>(StateKey, &'a str);
+
+impl Equivalent<(StateKey, PinId)> for PinLookup<'_> {
+    fn equivalent(&self, other: &(StateKey, PinId)) -> bool {
+        self.0 == other.0 && self.1 == other.1.as_str()
+    }
+}
+
 impl NodeCaches {
     pub fn next_frame(&mut self) {
         self.caches.clear();
@@ -53,10 +62,19 @@ impl NodeCaches {
     }
 
     pub fn get_output_data(&self, node_id: NodeId, key: StateKey, pin: PinId) -> Option<DataValue> {
+        self.get_output_data_ref(node_id, key, &pin).cloned()
+    }
+
+    /// Borrows a node's cached output without copying its key or value.
+    pub fn get_output_data_ref(
+        &self,
+        node_id: NodeId,
+        key: StateKey,
+        pin: &str,
+    ) -> Option<&DataValue> {
         self.caches
             .get(&node_id)
-            .and_then(|c| c.output_data.get(&(key, pin.clone())))
-            .cloned()
+            .and_then(|c| c.output_data.get(&PinLookup(key, pin)))
     }
 
     pub fn set_output_data(&mut self, node_id: NodeId, key: StateKey, pin: PinId, data: DataValue) {
@@ -89,17 +107,20 @@ impl NodeCaches {
         key: StateKey,
         pin: PinId,
     ) -> Result<TimeUpdate, GraphError> {
-        let error = || GraphError::TimeUpdateMissingBack(TargetPin::NodeTime(node_id, pin.clone()));
+        self.get_input_time_update_by_pin(node_id, key, &pin)
+    }
 
+    pub(crate) fn get_input_time_update_by_pin(
+        &self,
+        node_id: NodeId,
+        key: StateKey,
+        pin: &str,
+    ) -> Result<TimeUpdate, GraphError> {
         self.caches
             .get(&node_id)
-            .ok_or_else(error)
-            .and_then(|c| {
-                c.input_time_updates
-                    .get(&(key, pin.clone()))
-                    .ok_or_else(error)
-            })
+            .and_then(|c| c.input_time_updates.get(&PinLookup(key, pin)))
             .cloned()
+            .ok_or_else(|| GraphError::TimeUpdateMissingBack(TargetPin::NodeTime(node_id, pin.into())))
     }
 
     pub fn set_input_time_update(
@@ -143,6 +164,31 @@ impl NodeCaches {
 mod tests {
     use super::*;
     use crate::pose::{BonePose, Pose};
+
+    #[test]
+    fn borrowed_pin_keys_distinguish_states_and_pins() {
+        let node = NodeId::default();
+        let key = StateKey::Temporary(uuid::Uuid::nil());
+        let mut caches = NodeCaches::default();
+        caches.set_output_data(node, key, "pose".into(), DataValue::F32(2.0));
+        caches.set_input_time_update(node, key, "pose".into(), TimeUpdate::Delta(0.25));
+
+        assert_eq!(
+            caches.get_output_data_ref(node, key, "pose"),
+            Some(&DataValue::F32(2.0))
+        );
+        assert!(caches.get_output_data_ref(node, key, "phase").is_none());
+        assert!(caches.get_output_data_ref(node, StateKey::Default, "pose").is_none());
+        assert!(matches!(
+            caches.get_input_time_update_by_pin(node, key, "pose"),
+            Ok(TimeUpdate::Delta(0.25))
+        ));
+        assert!(matches!(
+            caches.get_input_time_update_by_pin(node, key, "phase"),
+            Err(GraphError::TimeUpdateMissingBack(TargetPin::NodeTime(id, pin)))
+                if id == node && pin == "phase"
+        ));
+    }
 
     #[test]
     fn snapshot_shares_cached_pose_until_the_node_changes() {
