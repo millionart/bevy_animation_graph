@@ -279,6 +279,14 @@ impl<'a> NodeContext<'a> {
             .get_mut_or_insert_with(self.node_id, key, default)
     }
 
+    /// Replaces the current value when the node does not need to modify its previous state.
+    pub fn replace_state<T: GraphStateType>(&mut self, value: T) -> Result<(), GraphError> {
+        let key = self.graph_context.state_key;
+        self.graph_context
+            .node_states_mut()
+            .replace_state(self.node_id, key, value)
+    }
+
     pub fn with_temp_state_key(mut self) -> Self {
         self.graph_context = self.graph_context.with_temp_state_key();
         let new_key = self.graph_context.state_key;

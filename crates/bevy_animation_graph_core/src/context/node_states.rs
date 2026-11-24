@@ -62,15 +62,36 @@ impl NodeState {
         }))
     }
 
-    pub fn get_state<T: GraphStateType>(&self, key: StateKey) -> Result<&T, GraphError> {
+    fn get_any(&self, key: StateKey) -> Option<&dyn Any> {
         self.upcoming_state
             .get(&key)
             .or(self.last_state.as_ref())
-            .ok_or(GraphError::MissingStateValue)
-            .and_then(|v| {
-                let v: &dyn Any = v.value.as_ref();
-                v.downcast_ref::<T>().ok_or(GraphError::MismatchedStateType)
-            })
+            .map(|state| state.value.as_ref() as &dyn Any)
+    }
+
+    pub fn get_state<T: GraphStateType>(&self, key: StateKey) -> Result<&T, GraphError> {
+        self.get_any(key)
+            .ok_or(GraphError::MissingStateValue)?
+            .downcast_ref::<T>()
+            .ok_or(GraphError::MismatchedStateType)
+    }
+
+    fn replace_state<T: GraphStateType>(&mut self, key: StateKey, value: T) -> Result<(), GraphError> {
+        if let Some(state) = self.upcoming_state.get_mut(&key).and_then(Arc::get_mut) {
+            let previous: &mut dyn Any = state.value.as_mut();
+            *previous.downcast_mut::<T>().ok_or(GraphError::MismatchedStateType)? = value;
+            return Ok(());
+        }
+        if self.get_any(key).is_some_and(|previous| !previous.is::<T>()) {
+            return Err(GraphError::MismatchedStateType);
+        }
+        self.upcoming_state.insert(
+            key,
+            Arc::new(NodeStateBox {
+                value: Box::new(value),
+            }),
+        );
+        Ok(())
     }
 
     pub fn get_mut_or_insert_with<T: GraphStateType>(
@@ -141,6 +162,21 @@ impl NodeStates {
             .get(&node_id)
             .ok_or(GraphError::MissingStateValue)
             .and_then(|n| n.get_state(key))
+    }
+
+    /// Borrows the current or last committed state for inspection of its concrete type.
+    pub fn get_any(&self, node_id: NodeId, key: StateKey) -> Option<&dyn Any> {
+        self.states.get(&node_id)?.get_any(key)
+    }
+
+    /// Replaces the state without cloning the previous value.
+    pub fn replace_state<T: GraphStateType>(
+        &mut self,
+        node_id: NodeId,
+        key: StateKey,
+        value: T,
+    ) -> Result<(), GraphError> {
+        self.states.entry(node_id).or_default().replace_state(key, value)
     }
 
     pub fn get_mut_or_insert_with<T: GraphStateType>(
@@ -285,6 +321,41 @@ mod tests {
                 .value,
             17
         );
+    }
+
+    #[test]
+    fn replacement_preserves_snapshots_and_never_clones_the_old_value() {
+        let mut states = NodeStates::default();
+        let clones = Arc::<AtomicUsize>::default();
+        let node = NodeId::default();
+        let key = StateKey::Default;
+        let temporary = StateKey::Temporary(Uuid::new_v4());
+        let make_state = |value| TrackedState {
+            value,
+            clones: Arc::clone(&clones),
+        };
+
+        assert!(states.get_any(node, key).is_none());
+        states.replace_state(node, key, make_state(7)).unwrap();
+        states.next_frame();
+        states.replace_state(node, temporary, make_state(9)).unwrap();
+        let snapshot = states.clone();
+
+        states.replace_state(node, temporary, make_state(13)).unwrap();
+        states.replace_state(node, temporary, make_state(15)).unwrap();
+        states.replace_state(node, key, make_state(11)).unwrap();
+        assert!(matches!(
+            states.replace_state(node, temporary, 0.0_f32),
+            Err(GraphError::MismatchedStateType)
+        ));
+
+        assert_eq!(states.get::<TrackedState>(node, temporary).unwrap().value, 15);
+        assert_eq!(snapshot.get::<TrackedState>(node, temporary).unwrap().value, 9);
+        assert_eq!(snapshot.get::<TrackedState>(node, key).unwrap().value, 7);
+        states.next_frame();
+        let committed = states.get_any(node, temporary).unwrap();
+        assert_eq!(committed.downcast_ref::<TrackedState>().unwrap().value, 11);
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
     }
 
     #[test]
