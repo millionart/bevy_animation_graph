@@ -128,6 +128,11 @@ impl Skeleton {
         self.id_to_path.values()
     }
 
+    /// Iterates over the stored identifier and path of each bone.
+    pub fn iter_bone_paths(&self) -> impl Iterator<Item = (BoneId, &EntityPath)> {
+        self.id_to_path.iter().map(|(&id, path)| (id, path))
+    }
+
     fn indent(f: &mut std::fmt::Formatter<'_>, level: u32) -> std::fmt::Result {
         if level == 0 {
             return Ok(());
