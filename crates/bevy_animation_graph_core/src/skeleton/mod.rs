@@ -171,3 +171,26 @@ impl Debug for Skeleton {
         self.fmt_level(f, 0, EntityPath::default().id())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paired_bone_paths_keep_stored_ids_and_iteration_order() {
+        let mut skeleton = Skeleton::default();
+        for path in ["root", "root/left", "root/right", "root/left/socket", "root/right/socket"] {
+            skeleton.add_bone(
+                EntityPath::from_slashed_string(path.to_owned()),
+                Transform::IDENTITY,
+                Transform::IDENTITY,
+            );
+        }
+
+        assert!(
+            skeleton
+                .iter_bone_paths()
+                .eq(skeleton.iter_paths().map(|path| (path.id(), path)))
+        );
+    }
+}
